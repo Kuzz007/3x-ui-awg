@@ -4,17 +4,15 @@ import (
 	"bytes"
 	"crypto/tls"
 	"errors"
+	"io"
 	"net"
 	"testing"
 	"time"
 )
 
 // TestNewSNIRelayListenerNoTargetsReturnsInnerUnchanged pins the actual
-// regression guarantee described in newSNIRelayListener's doc comment: with
-// no targets configured (every install today, and every Naive-less install
-// tomorrow), Manager.Start's accept path must be the literal, unwrapped
-// listener -- not a wrapper that merely behaves the same, but wrapping
-// removed entirely.
+// regression guarantee: with no targets, the wrapper is skipped entirely,
+// not just made to behave the same.
 func TestNewSNIRelayListenerNoTargetsReturnsInnerUnchanged(t *testing.T) {
 	inner, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -30,13 +28,9 @@ func TestNewSNIRelayListenerNoTargetsReturnsInnerUnchanged(t *testing.T) {
 	}
 }
 
-// clientHelloBytes returns the raw wire bytes of one real TLS ClientHello
-// for the given SNI. Generated via a genuine tls.Client handshake attempt
-// against a throwaway net.Pipe() peer that never replies -- tls.Client
-// writes exactly one ClientHello and then blocks waiting for a ServerHello,
-// so draining the pipe's other end captures those bytes and nothing else.
-// This is the simplest way to get bytes crypto/tls's own parser is
-// guaranteed to accept, without hand-encoding TLS record/extension framing.
+// clientHelloBytes returns one real ClientHello's wire bytes for sni, via a
+// genuine tls.Client handshake against a net.Pipe() peer that never
+// replies -- tls.Client sends exactly one ClientHello, then blocks.
 func clientHelloBytes(t *testing.T, sni string) []byte {
 	t.Helper()
 	readSide, writeSide := net.Pipe()
@@ -48,7 +42,7 @@ func clientHelloBytes(t *testing.T, sni string) []byte {
 		readSide.Close()
 	}()
 	go func() {
-		//nolint:gosec // test-only handshake against a pipe that never replies; nothing is ever verified
+		//nolint:gosec // test-only handshake against a pipe that never replies
 		_ = tls.Client(writeSide, &tls.Config{ServerName: sni, InsecureSkipVerify: true}).Handshake()
 	}()
 	select {
@@ -63,11 +57,8 @@ func clientHelloBytes(t *testing.T, sni string) []byte {
 	}
 }
 
-// dialAndSendClientHello opens a real TCP connection to addr and writes one
-// real ClientHello for sni onto it, then returns the raw conn for the
-// caller to read a reply from directly -- no concurrent tls.Client goroutine
-// left touching the conn afterward, so there's no race with the caller's
-// own reads.
+// dialAndSendClientHello dials addr and writes one real ClientHello for sni,
+// returning the raw conn with no concurrent goroutine left touching it.
 func dialAndSendClientHello(t *testing.T, addr, sni string) net.Conn {
 	t.Helper()
 	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
@@ -79,6 +70,18 @@ func dialAndSendClientHello(t *testing.T, addr, sni string) net.Conn {
 		t.Fatalf("write ClientHello to %s: %v", addr, err)
 	}
 	return conn
+}
+
+// drainAccept discards every connection relayLn.Accept() ever returns, so a
+// bug that leaks a supposedly-relayed connection through doesn't hang a test.
+func drainAccept(relayLn net.Listener) {
+	for {
+		c, err := relayLn.Accept()
+		if err != nil {
+			return
+		}
+		c.Close()
+	}
 }
 
 func TestPeekClientHelloSNIExtractsSNIWithoutLosingBytes(t *testing.T) {
@@ -119,18 +122,13 @@ func TestPeekClientHelloSNIExtractsSNIWithoutLosingBytes(t *testing.T) {
 		t.Errorf("peekClientHelloSNI sni = %q, want naive.example.test", sni)
 	}
 	if !bytes.Equal(prefix, hello) {
-		t.Errorf("prefix (%d bytes) does not match the ClientHello actually sent (%d bytes) -- some bytes were lost or altered", len(prefix), len(hello))
+		t.Errorf("prefix (%d bytes) does not match the ClientHello actually sent (%d bytes)", len(prefix), len(hello))
 	}
 }
 
 // TestPeekClientHelloSNIDiscardsTheAbortAlert is the load-bearing test for
-// peekConn.Write's doc comment: without that override, aborting the
-// sacrificial handshake via GetConfigForClient writes a real TLS alert
-// record onto the real client's socket (confirmed by reading Go's own
-// crypto/tls source, see peekConn's doc comment) -- which a real client (or,
-// here, a raw read on the other end of the pipe) would see arrive
-// unprompted. Confirms nothing at all reaches the client side during the
-// peek.
+// peekConn.Write: without it, the aborted sacrificial handshake leaks a real
+// TLS alert onto the client's socket (see peekConn's doc comment).
 func TestPeekClientHelloSNIDiscardsTheAbortAlert(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -162,7 +160,7 @@ func TestPeekClientHelloSNIDiscardsTheAbortAlert(t *testing.T) {
 	buf := make([]byte, 16)
 	n, err := client.Read(buf)
 	if n > 0 {
-		t.Fatalf("peekClientHelloSNI wrote %d bytes back to the client -- peekConn.Write must discard everything, got: %x", n, buf[:n])
+		t.Fatalf("peekClientHelloSNI wrote %d bytes back to the client, got: %x", n, buf[:n])
 	}
 	var netErr net.Error
 	if !errors.As(err, &netErr) || !netErr.Timeout() {
@@ -171,24 +169,28 @@ func TestPeekClientHelloSNIDiscardsTheAbortAlert(t *testing.T) {
 }
 
 func TestSNIRelaySplicesMatchingConnectionToBackend(t *testing.T) {
+	hello := clientHelloBytes(t, "naive.example.test")
+
 	backendLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer backendLn.Close()
 
-	backendGotClientHello := make(chan bool, 1)
+	backendResult := make(chan []byte, 1)
 	go func() {
 		c, err := backendLn.Accept()
 		if err != nil {
 			return
 		}
 		defer c.Close()
-		buf := make([]byte, 8192)
-		n, err := c.Read(buf)
-		backendGotClientHello <- err == nil && n > 0 && bytes.Contains(buf[:n], []byte("naive"))
-		// Echo one byte back so the client side can confirm the relay is
-		// bidirectional, not just backend-bound.
+		buf := make([]byte, len(hello))
+		_, err = io.ReadFull(c, buf)
+		if err != nil {
+			backendResult <- nil
+			return
+		}
+		backendResult <- buf
 		_, _ = c.Write([]byte("R"))
 	}()
 
@@ -200,21 +202,26 @@ func TestSNIRelaySplicesMatchingConnectionToBackend(t *testing.T) {
 	relayLn := newSNIRelayListener(frontLn, map[string]string{
 		"naive.example.test": backendLn.Addr().String(),
 	})
+	go drainAccept(relayLn)
 
-	// relayLn.Accept must never fire for a matched connection (it's spliced
-	// away entirely) -- drain it in the background so a bug that leaks a
-	// matched conn through doesn't just hang the test.
-	go func() {
-		for {
-			c, err := relayLn.Accept()
-			if err != nil {
-				return
-			}
-			c.Close()
+	client, err := net.DialTimeout("tcp", frontLn.Addr().String(), 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if _, err := client.Write(hello); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case got := <-backendResult:
+		if !bytes.Equal(got, hello) {
+			t.Errorf("backend received %d bytes not matching the ClientHello relayRaw's prefix should have carried (got %d bytes)", len(got), len(hello))
 		}
-	}()
+	case <-time.After(2 * time.Second):
+		t.Fatal("backend never received a connection -- relayRaw did not dial it")
+	}
 
-	client := dialAndSendClientHello(t, frontLn.Addr().String(), "naive.example.test")
 	_ = client.SetReadDeadline(time.Now().Add(2 * time.Second))
 	reply := make([]byte, 1)
 	if _, err := client.Read(reply); err != nil {
@@ -223,23 +230,11 @@ func TestSNIRelaySplicesMatchingConnectionToBackend(t *testing.T) {
 	if reply[0] != 'R' {
 		t.Errorf("relayed reply = %q, want %q", reply, "R")
 	}
-
-	select {
-	case gotSNIInPrefix := <-backendGotClientHello:
-		if !gotSNIInPrefix {
-			t.Error("backend's ClientHello bytes did not contain the SNI relayRaw's prefix write should have carried")
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("backend never received a connection -- relayRaw did not dial it")
-	}
 }
 
-// TestSNIRelayPassesThroughNonMatchingSNIUnchanged is the regression test
-// for the design's core safety claim: a connection SNI relay doesn't match
-// must reach the real TLS listener behind it exactly as if the peek never
-// happened. A real, complete TLS handshake -- both sides, independently
-// checking success -- is the strongest form of that proof: any single byte
-// disturbed by the peek/replay machinery fails the handshake.
+// TestSNIRelayPassesThroughNonMatchingSNIUnchanged proves the no-match path
+// via a real, complete two-sided TLS handshake: any byte the peek/replay
+// machinery disturbs fails it.
 func TestSNIRelayPassesThroughNonMatchingSNIUnchanged(t *testing.T) {
 	frontLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -273,7 +268,7 @@ func TestSNIRelayPassesThroughNonMatchingSNIUnchanged(t *testing.T) {
 	select {
 	case server = <-accepted:
 	case <-time.After(2 * time.Second):
-		t.Fatal("Accept never returned a connection for a non-matching SNI -- the pass-through path is broken")
+		t.Fatal("Accept never returned a connection for a non-matching SNI")
 	}
 	defer server.Close()
 
@@ -284,7 +279,7 @@ func TestSNIRelayPassesThroughNonMatchingSNIUnchanged(t *testing.T) {
 	}
 	tlsServer := tls.Server(server, &tls.Config{Certificates: []tls.Certificate{cert}})
 	if err := tlsServer.Handshake(); err != nil {
-		t.Fatalf("server-side handshake over the passed-through connection failed: %v -- SNI relay's peek must have disturbed the byte stream", err)
+		t.Fatalf("server-side handshake over the passed-through connection failed: %v", err)
 	}
 	select {
 	case err := <-clientErrCh:
@@ -296,7 +291,98 @@ func TestSNIRelayPassesThroughNonMatchingSNIUnchanged(t *testing.T) {
 	}
 }
 
-func TestSNIRelayIsCaseInsensitive(t *testing.T) {
+// TestSNIRelayMatchIsCaseInsensitive covers both sides of the
+// case-normalization independently: the configured key (lowercased once, at
+// construction) and the wire SNI (lowercased on every lookup).
+func TestSNIRelayMatchIsCaseInsensitive(t *testing.T) {
+	cases := []struct {
+		name      string
+		configKey string
+		wireSNI   string
+	}{
+		{"mixed-case configured key", "Naive.Example.Test", "naive.example.test"},
+		{"mixed-case wire SNI", "naive.example.test", "Naive.Example.Test"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			backendLn, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer backendLn.Close()
+			go func() {
+				c, err := backendLn.Accept()
+				if err != nil {
+					return
+				}
+				defer c.Close()
+				buf := make([]byte, 8192)
+				_, _ = c.Read(buf)
+				_, _ = c.Write([]byte("R"))
+			}()
+
+			frontLn, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer frontLn.Close()
+			relayLn := newSNIRelayListener(frontLn, map[string]string{tc.configKey: backendLn.Addr().String()})
+			go drainAccept(relayLn)
+
+			client := dialAndSendClientHello(t, frontLn.Addr().String(), tc.wireSNI)
+			_ = client.SetReadDeadline(time.Now().Add(2 * time.Second))
+			reply := make([]byte, 1)
+			if _, err := client.Read(reply); err != nil {
+				t.Fatalf("reading the backend's echoed reply: %v", err)
+			}
+			if reply[0] != 'R' {
+				t.Errorf("relayed reply = %q, want %q", reply, "R")
+			}
+		})
+	}
+}
+
+// TestCloseWhileHandleIsBlockedOnAcceptDoesNotPanic pins the fix for the
+// original bug: closing while a handle goroutine is blocked trying to hand
+// a non-matching connection to Accept must not panic on a closed channel
+// send. No drainAccept here -- nothing ever reads l.out, so handle() is
+// still blocked on its send when Close runs.
+func TestCloseWhileHandleIsBlockedOnAcceptDoesNotPanic(t *testing.T) {
+	frontLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer frontLn.Close()
+	relayLn := newSNIRelayListener(frontLn, map[string]string{
+		"never-matches.test": "127.0.0.1:1",
+	})
+
+	dialAndSendClientHello(t, frontLn.Addr().String(), "some-other-site.test")
+	time.Sleep(100 * time.Millisecond) // let handle() reach its blocked send
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if err := relayLn.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close never returned")
+	}
+	// A pre-fix send-on-closed-channel panic would have already crashed this
+	// whole test binary by now -- reaching this point at all is the proof.
+}
+
+// TestSNIRelayDoesNotTruncateOnClientHalfClose pins relayRaw's wait-for-
+// both-directions fix: waiting for only the first direction to finish (the
+// client's own half-close) would cut the backend's still-in-flight reply.
+func TestSNIRelayDoesNotTruncateOnClientHalfClose(t *testing.T) {
+	fullReply := []byte("first-chunk|second-chunk-after-a-delay")
+	firstChunk, secondChunk := fullReply[:len("first-chunk|")], fullReply[len("first-chunk|"):]
+
 	backendLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -310,7 +396,9 @@ func TestSNIRelayIsCaseInsensitive(t *testing.T) {
 		defer c.Close()
 		buf := make([]byte, 8192)
 		_, _ = c.Read(buf)
-		_, _ = c.Write([]byte("R"))
+		_, _ = c.Write(firstChunk)
+		time.Sleep(200 * time.Millisecond) // gives the client's own CloseWrite below time to land first
+		_, _ = c.Write(secondChunk)
 	}()
 
 	frontLn, err := net.Listen("tcp", "127.0.0.1:0")
@@ -318,27 +406,26 @@ func TestSNIRelayIsCaseInsensitive(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer frontLn.Close()
-	// Configured key is mixed-case; the dialed SNI below is all-lowercase.
 	relayLn := newSNIRelayListener(frontLn, map[string]string{
-		"Naive.Example.Test": backendLn.Addr().String(),
+		"naive.example.test": backendLn.Addr().String(),
 	})
-	go func() {
-		for {
-			c, err := relayLn.Accept()
-			if err != nil {
-				return
-			}
-			c.Close()
-		}
-	}()
+	go drainAccept(relayLn)
 
 	client := dialAndSendClientHello(t, frontLn.Addr().String(), "naive.example.test")
-	_ = client.SetReadDeadline(time.Now().Add(2 * time.Second))
-	reply := make([]byte, 1)
-	if _, err := client.Read(reply); err != nil {
-		t.Fatalf("reading the backend's echoed reply: %v -- a lowercase SNI must still match the mixed-case configured key", err)
+	tcpClient, ok := client.(*net.TCPConn)
+	if !ok {
+		t.Fatal("dialAndSendClientHello did not return a *net.TCPConn")
 	}
-	if reply[0] != 'R' {
-		t.Errorf("relayed reply = %q, want %q", reply, "R")
+	if err := tcpClient.CloseWrite(); err != nil {
+		t.Fatalf("CloseWrite: %v", err)
+	}
+
+	_ = client.SetReadDeadline(time.Now().Add(2 * time.Second))
+	got, err := io.ReadAll(client)
+	if err != nil {
+		t.Fatalf("reading the relayed reply: %v", err)
+	}
+	if !bytes.Equal(got, fullReply) {
+		t.Errorf("got %q, want %q -- the client's early half-close must not truncate the backend's still-in-flight reply", got, fullReply)
 	}
 }

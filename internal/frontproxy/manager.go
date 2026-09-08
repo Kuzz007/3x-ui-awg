@@ -25,13 +25,8 @@ type Options struct {
 	Routing Config
 	Decoy   DecoyConfig
 	TLS     TLSSettings
-	// SNITargets maps a ClientHello SNI (case-insensitive) to a loopback
-	// "host:port" a matching connection's raw, still-encrypted bytes get
-	// spliced to instead of this package's own TLS termination -- see
-	// sni_relay.go. Empty (the default for every caller that hasn't wired a
-	// foreign backend, e.g. a Naive sidecar, into settings yet) means the
-	// listener is built exactly as it always was, with nothing new in the
-	// accept path at all.
+	// SNITargets maps a ClientHello SNI to a loopback "host:port" its raw
+	// bytes get spliced to instead of TLS termination here; see sni_relay.go.
 	SNITargets map[string]string
 }
 
