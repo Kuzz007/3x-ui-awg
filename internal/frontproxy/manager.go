@@ -25,6 +25,14 @@ type Options struct {
 	Routing Config
 	Decoy   DecoyConfig
 	TLS     TLSSettings
+	// SNITargets maps a ClientHello SNI (case-insensitive) to a loopback
+	// "host:port" a matching connection's raw, still-encrypted bytes get
+	// spliced to instead of this package's own TLS termination -- see
+	// sni_relay.go. Empty (the default for every caller that hasn't wired a
+	// foreign backend, e.g. a Naive sidecar, into settings yet) means the
+	// listener is built exactly as it always was, with nothing new in the
+	// accept path at all.
+	SNITargets map[string]string
 }
 
 // Manager owns the single reverse-proxy listener for the whole install.
@@ -86,6 +94,7 @@ func (m *Manager) Start(opts Options) error {
 		cancel()
 		return fmt.Errorf("reverse-proxy listen on %s: %w", addr, err)
 	}
+	ln = newSNIRelayListener(ln, opts.SNITargets)
 	ln = tls.NewListener(ln, tlsCfg)
 
 	m.store(newHandler(opts.Routing, opts.Decoy))
