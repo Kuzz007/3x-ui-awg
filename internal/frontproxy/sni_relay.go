@@ -2,6 +2,7 @@ package frontproxy
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"errors"
 	"io"
@@ -179,6 +180,12 @@ func peekClientHelloSNI(raw net.Conn) (sni string, prefix []byte) {
 	_ = raw.SetReadDeadline(time.Now().Add(sniPeekTimeout))
 	defer func() { _ = raw.SetReadDeadline(time.Time{}) }()
 
+	// The context carries the same bound as the read deadline above; either
+	// one alone would already stop a stalled peek, this just satisfies the
+	// codebase's own context-aware-I/O convention (noctx).
+	ctx, cancel := context.WithTimeout(context.Background(), sniPeekTimeout)
+	defer cancel()
+
 	pc := &peekConn{Conn: raw}
 	cfg := &tls.Config{
 		GetConfigForClient: func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
@@ -186,7 +193,7 @@ func peekClientHelloSNI(raw net.Conn) (sni string, prefix []byte) {
 			return nil, errSNIPeekDone
 		},
 	}
-	_ = tls.Server(pc, cfg).Handshake()
+	_ = tls.Server(pc, cfg).HandshakeContext(ctx)
 	return sni, pc.buf.Bytes()
 }
 
@@ -199,7 +206,9 @@ func peekClientHelloSNI(raw net.Conn) (sni string, prefix []byte) {
 func relayRaw(raw net.Conn, prefix []byte, backendAddr string) {
 	defer raw.Close()
 
-	backend, err := net.DialTimeout("tcp", backendAddr, 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	backend, err := (&net.Dialer{}).DialContext(ctx, "tcp", backendAddr)
 	if err != nil {
 		logger.Warningf("frontproxy: sni relay: dial %s: %v", backendAddr, err)
 		return

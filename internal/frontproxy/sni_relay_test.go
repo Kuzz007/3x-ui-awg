@@ -3,6 +3,7 @@ package frontproxy
 import (
 	"bytes"
 	"crypto/tls"
+	"errors"
 	"net"
 	"testing"
 	"time"
@@ -163,8 +164,8 @@ func TestPeekClientHelloSNIDiscardsTheAbortAlert(t *testing.T) {
 	if n > 0 {
 		t.Fatalf("peekClientHelloSNI wrote %d bytes back to the client -- peekConn.Write must discard everything, got: %x", n, buf[:n])
 	}
-	netErr, ok := err.(net.Error)
-	if !ok || !netErr.Timeout() {
+	var netErr net.Error
+	if !errors.As(err, &netErr) || !netErr.Timeout() {
 		t.Fatalf("expected a read timeout (nothing ever sent), got: %v", err)
 	}
 }
