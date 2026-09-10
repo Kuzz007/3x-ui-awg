@@ -269,7 +269,10 @@ func (s *FrontProxyService) AutoStart() {
 	}
 	logger.Info("frontproxy: AutoStart: config resolved, starting manager")
 	if err := frontproxy.GetManager().Start(opts); err != nil {
-		logger.Warningf("frontproxy: failed to auto-start on boot: %v", err)
+		// Error, not Warning: after this change a restart can legitimately
+		// take the door down (see the panel-only-restart fix above), and
+		// this is the only place that failure gets logged at all.
+		logger.Errorf("frontproxy: failed to auto-start on boot: %v", err)
 		return
 	}
 	logger.Info("frontproxy: AutoStart: manager started")
