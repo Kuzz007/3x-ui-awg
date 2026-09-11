@@ -64,10 +64,14 @@ func (m *Manager) Start(opts Options) error {
 		return nil
 	}
 	if opts.Port <= 0 || opts.Port > 65535 {
-		return fmt.Errorf("invalid reverse-proxy port %d", opts.Port)
+		err := fmt.Errorf("invalid reverse-proxy port %d", opts.Port)
+		setCertStatus(CertStatus{State: CertStateFailed, Error: err.Error()})
+		return err
 	}
 	if opts.Routing.PanelBasePath == "" || matchesPrefix("/", opts.Routing.PanelBasePath) {
-		return fmt.Errorf("the panel needs a non-root base path before the reverse proxy can tell it apart from the decoy")
+		err := fmt.Errorf("the panel needs a non-root base path before the reverse proxy can tell it apart from the decoy")
+		setCertStatus(CertStatus{State: CertStateFailed, Error: err.Error()})
+		return err
 	}
 
 	logger.Infof("frontproxy: Start: building TLS config (mode=%s)", opts.TLS.Mode)
@@ -87,7 +91,9 @@ func (m *Manager) Start(opts Options) error {
 	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", addr)
 	if err != nil {
 		cancel()
-		return fmt.Errorf("reverse-proxy listen on %s: %w", addr, err)
+		err = fmt.Errorf("reverse-proxy listen on %s: %w", addr, err)
+		setCertStatus(CertStatus{State: CertStateFailed, Error: err.Error()})
+		return err
 	}
 	ln = newSNIRelayListener(ln, opts.SNITargets)
 	ln = tls.NewListener(ln, tlsCfg)
