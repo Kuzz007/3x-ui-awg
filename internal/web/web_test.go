@@ -67,11 +67,8 @@ func freeLoopbackPort(t *testing.T) int {
 	return ln.Addr().(*net.TCPAddr).Port
 }
 
-// Regression test for the bug fixed alongside this: StopAll() used to sit
-// inside stop()'s stopXray-gated block, so StopPanelOnly() (what "Restart
-// Panel" actually calls) never tore the reverse proxy down, and a changed
-// domain/cert/port could never take effect from the UI. This must fail
-// without that fix.
+// Regression test: StopAll() used to sit inside stop()'s stopXray-gated
+// block, so a panel-only "Restart Panel" never tore the door down.
 func TestStopPanelOnlyStopsFrontProxy(t *testing.T) {
 	if err := database.InitDB(filepath.Join(t.TempDir(), "x-ui.db")); err != nil {
 		t.Fatalf("InitDB: %v", err)
