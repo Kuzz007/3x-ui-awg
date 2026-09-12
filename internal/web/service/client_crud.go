@@ -196,6 +196,9 @@ func (s *ClientService) Create(inboundSvc *InboundService, payload *ClientCreate
 		if client.Secret == "" {
 			client.Secret = existing.Secret
 		}
+		if client.NaiveProxyPassword == "" {
+			client.NaiveProxyPassword = existing.NaiveProxyPassword
+		}
 	}
 
 	if client.SubID != "" {
@@ -274,6 +277,10 @@ func (s *ClientService) fillProtocolDefaults(c *model.Client, ib *model.Inbound)
 	case model.MTProto:
 		if c.Secret == "" {
 			c.Secret = model.GenerateFakeTLSSecret(mtprotoDomainFromSettings(ib.Settings))
+		}
+	case model.NaiveProxy:
+		if c.NaiveProxyPassword == "" {
+			c.NaiveProxyPassword = strings.ReplaceAll(uuid.NewString(), "-", "")
 		}
 	}
 	return nil
