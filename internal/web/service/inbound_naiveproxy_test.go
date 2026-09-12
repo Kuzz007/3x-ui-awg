@@ -1,6 +1,7 @@
 package service
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/mhsanaei/3x-ui/v3/internal/database/model"
@@ -14,8 +15,11 @@ func TestFillProtocolDefaultsNaiveProxy(t *testing.T) {
 	if err := cs.fillProtocolDefaults(c, ib); err != nil {
 		t.Fatal(err)
 	}
-	if c.NaiveProxyPassword == "" {
-		t.Fatal("naiveproxy client should get a generated password")
+	// A UUID with the dashes stripped, matching Trojan's own password shape --
+	// pinning the format catches a future generator swap to something Caddy's
+	// basic_auth (or the Caddyfile tokenizer) might not accept.
+	if len(c.NaiveProxyPassword) != 32 || strings.Contains(c.NaiveProxyPassword, "-") {
+		t.Fatalf("naiveproxy password = %q, want a 32-char dash-free hex string", c.NaiveProxyPassword)
 	}
 
 	// An existing password is not overwritten.

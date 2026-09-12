@@ -662,6 +662,8 @@ func (s *ClientService) UpdateInboundClient(inboundSvc *InboundService, data *mo
 		newClientId = clients[0].Email
 	case "mtproto":
 		newClientId = clients[0].Email
+	case "naiveproxy":
+		newClientId = clients[0].Email
 	default:
 		newClientId = clients[0].ID
 	}

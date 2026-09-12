@@ -497,6 +497,9 @@ func (s *ClientService) Update(inboundSvc *InboundService, id int, updated model
 	if updated.Secret == "" {
 		updated.Secret = existing.Secret
 	}
+	if updated.NaiveProxyPassword == "" {
+		updated.NaiveProxyPassword = existing.NaiveProxyPassword
+	}
 	// KeepAlive is a pointer for the same reason: ToRecord() collapses nil to
 	// 0, so an omitted field must be backfilled here, not left to convert.
 	if updated.KeepAlive == nil {
@@ -594,28 +597,29 @@ func (s *ClientService) Update(inboundSvc *InboundService, id int, updated model
 		if err := database.GetDB().Model(&model.ClientRecord{}).
 			Where("id = ?", id).
 			Updates(map[string]any{
-				"sub_id":            merged.SubID,
-				"uuid":              merged.UUID,
-				"password":          merged.Password,
-				"auth":              merged.Auth,
-				"secret":            merged.Secret,
-				"flow":              merged.Flow,
-				"security":          merged.Security,
-				"wg_private_key":    merged.PrivateKey,
-				"wg_public_key":     merged.PublicKey,
-				"wg_allowed_ips":    merged.AllowedIPs,
-				"wg_pre_shared_key": merged.PreSharedKey,
-				"wg_keep_alive":     merged.KeepAlive,
-				"limit_ip":          merged.LimitIP,
-				"total_gb":          merged.TotalGB,
-				"expiry_time":       merged.ExpiryTime,
-				"tg_id":             merged.TgID,
-				"comment":           merged.Comment,
-				"reset":             merged.Reset,
-				"reset_day":         merged.ResetDay,
-				"reset_max":         merged.ResetMax,
-				"traffic_reset":     merged.TrafficReset,
-				"traffic_reset_day": merged.TrafficResetDay,
+				"sub_id":               merged.SubID,
+				"uuid":                 merged.UUID,
+				"password":             merged.Password,
+				"auth":                 merged.Auth,
+				"secret":               merged.Secret,
+				"naive_proxy_password": merged.NaiveProxyPassword,
+				"flow":                 merged.Flow,
+				"security":             merged.Security,
+				"wg_private_key":       merged.PrivateKey,
+				"wg_public_key":        merged.PublicKey,
+				"wg_allowed_ips":       merged.AllowedIPs,
+				"wg_pre_shared_key":    merged.PreSharedKey,
+				"wg_keep_alive":        merged.KeepAlive,
+				"limit_ip":             merged.LimitIP,
+				"total_gb":             merged.TotalGB,
+				"expiry_time":          merged.ExpiryTime,
+				"tg_id":                merged.TgID,
+				"comment":              merged.Comment,
+				"reset":                merged.Reset,
+				"reset_day":            merged.ResetDay,
+				"reset_max":            merged.ResetMax,
+				"traffic_reset":        merged.TrafficReset,
+				"traffic_reset_day":    merged.TrafficResetDay,
 			}).Error; err != nil {
 			return needRestart, err
 		}

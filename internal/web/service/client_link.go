@@ -35,6 +35,9 @@ func applyClientRecordMerge(row *model.ClientRecord, incoming *model.ClientRecor
 	if incoming.AdTag != "" {
 		row.AdTag = incoming.AdTag
 	}
+	if incoming.NaiveProxyPassword != "" {
+		row.NaiveProxyPassword = incoming.NaiveProxyPassword
+	}
 	row.Flow = incoming.Flow
 	if incoming.Security != "" {
 		row.Security = incoming.Security

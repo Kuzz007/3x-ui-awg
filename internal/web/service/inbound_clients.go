@@ -215,6 +215,7 @@ func (s *InboundService) buildTargetClientFromSource(source model.Client, target
 	target.Auth = ""
 	target.Flow = ""
 	target.Secret = ""
+	target.NaiveProxyPassword = ""
 
 	targetProtocol := targetInbound.Protocol
 	switch targetProtocol {
@@ -233,6 +234,8 @@ func (s *InboundService) buildTargetClientFromSource(source model.Client, target
 		target.Auth = s.generateRandomCredential(targetProtocol)
 	case model.MTProto:
 		target.Secret = model.GenerateFakeTLSSecret(mtprotoDomainFromSettings(targetInbound.Settings))
+	case model.NaiveProxy:
+		target.NaiveProxyPassword = s.generateRandomCredential(targetProtocol)
 	default:
 		target.ID = s.generateRandomCredential(targetProtocol)
 	}
