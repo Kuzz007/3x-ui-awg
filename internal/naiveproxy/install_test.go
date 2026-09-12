@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -56,9 +57,8 @@ func TestCheckPlatform(t *testing.T) {
 	}
 }
 
-// buildTestArchive writes a minimal but real xz-compressed tar containing a
-// single entry, mirroring the pinned release's own shape closely enough for
-// extractBinary to exercise its real decompression/detar path end to end.
+// buildTestArchive writes a minimal, real xz-compressed tar with one entry,
+// so extractBinary exercises its real decompression/detar path end to end.
 func buildTestArchive(t *testing.T, entryName, content string) []byte {
 	t.Helper()
 	var tarBuf bytes.Buffer
@@ -95,6 +95,26 @@ func TestExtractBinaryFindsTheRealEntry(t *testing.T) {
 
 	if err := extractBinary(bytes.NewReader(archive), dst); err != nil {
 		t.Fatalf("extractBinary: %v", err)
+	}
+	got, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("reading extracted file: %v", err)
+	}
+	if string(got) != content {
+		t.Errorf("extracted content = %q, want %q", got, content)
+	}
+}
+
+// A tar built as "tar -cJf … ./caddy-forwardproxy-naive" (a common invocation
+// shape) writes entry names with a leading "./" -- extractBinary must still
+// find the binary, not reject an otherwise-valid archive as empty.
+func TestExtractBinaryToleratesADotSlashPrefix(t *testing.T) {
+	const content = "pretend-this-is-the-caddy-binary"
+	archive := buildTestArchive(t, "./"+archiveEntryName, content)
+	dst := filepath.Join(t.TempDir(), "out")
+
+	if err := extractBinary(bytes.NewReader(archive), dst); err != nil {
+		t.Fatalf("extractBinary with a ./-prefixed entry name: %v", err)
 	}
 	got, err := os.ReadFile(dst)
 	if err != nil {
@@ -177,9 +197,18 @@ func TestDownloadArchiveRejectsWrongDigest(t *testing.T) {
 	}
 }
 
+// refusingTransport fails t if Install ever actually reaches the network --
+// a stronger guard than a client with no timeout, which would just make a
+// real request (and pass) if the already-installed check ever regressed.
+type refusingTransport struct{ t *testing.T }
+
+func (rt refusingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	rt.t.Error("Install reached the network with a binary already present")
+	return nil, errors.New("network disabled in this test")
+}
+
 // Regression guard: Install must never touch the network once a binary is
-// already present, on any platform -- confirms the already-installed check
-// runs before the platform gate, not after.
+// already present.
 func TestInstallSkipsDownloadWhenAlreadyInstalled(t *testing.T) {
 	t.Setenv("XUI_BIN_FOLDER", t.TempDir())
 
@@ -193,9 +222,8 @@ func TestInstallSkipsDownloadWhenAlreadyInstalled(t *testing.T) {
 		t.Fatal("IsInstalled() = false right after writing BinPath(), setup is broken")
 	}
 
-	// A client that would fail any real request -- Install must never reach
-	// the download path here, since IsInstalled() is already true.
-	if err := Install(context.Background(), http.DefaultClient); err != nil {
+	client := &http.Client{Transport: refusingTransport{t}}
+	if err := Install(context.Background(), client); err != nil {
 		t.Fatalf("Install with an already-present binary: %v", err)
 	}
 }

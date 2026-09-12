@@ -19,6 +19,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 
@@ -27,9 +28,7 @@ import (
 	"github.com/mhsanaei/3x-ui/v3/internal/config"
 )
 
-// releaseTag/releaseSHA256 pin one klzgrad/forwardproxy release -- verified
-// against the project's own GitHub release asset digest, bumped only
-// deliberately.
+// releaseTag/releaseSHA256 pin one klzgrad/forwardproxy release, bumped only deliberately.
 const (
 	releaseTag    = "v2.11.2-naive"
 	releaseSHA256 = "19eccb7321dd877a5fb4a3dba6ef1b745185188b616c96cc6201f1a1fc0380a8"
@@ -38,10 +37,8 @@ const (
 // archiveEntryName is the path inside the tar this release always uses.
 const archiveEntryName = "caddy-forwardproxy-naive/caddy"
 
-// maxArchiveBytes/maxBinaryBytes bound the compressed download and the
-// decompressed binary respectively -- the real archive is ~12 MiB and the
-// binary inside it ~48 MiB; these only guard against a redirect or a
-// decompression bomb filling the disk.
+// maxArchiveBytes/maxBinaryBytes guard against a redirect or a decompression
+// bomb filling the disk -- the real archive is ~12 MiB, the binary ~48 MiB.
 const (
 	maxArchiveBytes = 64 << 20
 	maxBinaryBytes  = 256 << 20
@@ -80,8 +77,7 @@ var downloadURL = fmt.Sprintf(
 )
 
 // Install downloads the pinned Caddy+forwardproxy release and extracts its
-// binary. A no-op if already installed. client comes from the caller so the
-// download honors the panel's own proxy, matching adguard/psiphon's Install.
+// binary. client comes from the caller so the download honors the panel's own proxy.
 func Install(ctx context.Context, client *http.Client) error {
 	if IsInstalled() {
 		return nil
@@ -90,18 +86,23 @@ func Install(ctx context.Context, client *http.Client) error {
 		return err
 	}
 	want, err := hex.DecodeString(releaseSHA256)
-	if err != nil || len(want) != sha256.Size {
-		return fmt.Errorf("malformed pinned checksum")
+	if err != nil {
+		return fmt.Errorf("malformed pinned checksum: %w", err)
+	}
+	if len(want) != sha256.Size {
+		return fmt.Errorf("malformed pinned checksum: got %d bytes, want %d", len(want), sha256.Size)
 	}
 	if err := os.MkdirAll(Dir(), 0o700); err != nil {
 		return fmt.Errorf("cannot create %s: %w", Dir(), err)
 	}
 
-	archive, err := os.CreateTemp(Dir(), "download-*.tar.xz")
+	// A fixed name, not os.CreateTemp's random one: a killed/OOM'd Install
+	// leaves at most this one leftover file for the next attempt to reuse.
+	archivePath := BinPath() + ".tar.xz"
+	archive, err := os.OpenFile(archivePath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return fmt.Errorf("cannot create a staging file: %w", err)
 	}
-	archivePath := archive.Name()
 	defer os.Remove(archivePath)
 
 	if err := downloadArchive(ctx, client, want, archive); err != nil {
@@ -159,8 +160,7 @@ func downloadArchive(ctx context.Context, client *http.Client, want []byte, dst 
 }
 
 // extractBinary reads archiveEntryName out of the xz-compressed tar in r and
-// writes it to dst. Rejects anything that isn't a plain regular file (no
-// symlinks, no path escaping the expected single entry name).
+// writes it to dst, rejecting anything that isn't a plain regular file.
 func extractBinary(r io.Reader, dst string) error {
 	xr, err := xz.NewReader(r)
 	if err != nil {
@@ -175,7 +175,9 @@ func extractBinary(r io.Reader, dst string) error {
 		if err != nil {
 			return fmt.Errorf("reading the NaiveProxy archive: %w", err)
 		}
-		if hdr.Name != archiveEntryName || hdr.Typeflag != tar.TypeReg {
+		// path.Clean, not a raw comparison: a tar built as "tar -cJf … ./caddy-forwardproxy-naive"
+		// writes entry names with a leading "./", which a bare != would reject as "no entry" on an otherwise-valid archive.
+		if path.Clean(hdr.Name) != archiveEntryName || hdr.Typeflag != tar.TypeReg {
 			continue
 		}
 		out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o750)
