@@ -37,8 +37,6 @@ jobs:
       - name: Stub internal/web/dist for go:embed
         run: mkdir -p internal/web/dist && touch internal/web/dist/.gitkeep
       - name: Test
-        env:
-          XUI_NAIVE_E2E_FORCE_TEMP: "1"
         run: |
           go list ./... | grep -v '/frontend/node_modules/' > /tmp/go-packages.txt
           go test -shuffle=on -count=1 $(cat /tmp/go-packages.txt)

@@ -71,7 +71,7 @@ func canReachGitHub(ctx context.Context) bool {
 // TestRenderCaddyfileValidatesAgainstTheRealBinary runs "caddy validate" on
 // renderCaddyfile's output -- gated behind XUI_NAIVE_E2E=1 (downloads ~12 MiB).
 func TestRenderCaddyfileValidatesAgainstTheRealBinary(t *testing.T) {
-	if os.Getenv("XUI_NAIVE_E2E") == "" && os.Getenv("XUI_NAIVE_E2E_FORCE_TEMP") == "" {
+	if os.Getenv("XUI_NAIVE_E2E") == "" {
 		t.Skip("set XUI_NAIVE_E2E=1 to run (downloads the real Caddy release)")
 	}
 	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
