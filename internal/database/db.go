@@ -172,6 +172,9 @@ func initModels() error {
 	if err := migrateSyncOrphanColumns(); err != nil {
 		return err
 	}
+	if err := migrateNaiveProxyPasswordColumn(); err != nil {
+		return err
+	}
 	if err := migrateClientEmailLowerIndex(); err != nil {
 		return err
 	}
@@ -355,6 +358,15 @@ func migrateSyncOrphanColumns() error {
 		return nil
 	}
 	return db.Exec("UPDATE clients SET sync_orphaned_at = 0 WHERE sync_orphaned_at IS NULL").Error
+}
+
+// AutoMigrate adds the column; an older SQLite ALTER TABLE leaves existing
+// rows NULL, and a NULL naive_proxy_password fails every ClientRecord scan.
+func migrateNaiveProxyPasswordColumn() error {
+	if !db.Migrator().HasColumn(&model.ClientRecord{}, "naive_proxy_password") {
+		return nil
+	}
+	return db.Exec("UPDATE clients SET naive_proxy_password = '' WHERE naive_proxy_password IS NULL").Error
 }
 
 // The client identity checks match emails case-insensitively; without an

@@ -451,6 +451,10 @@ func (s *ClientService) AddInboundClient(inboundSvc *InboundService, data *model
 			if client.AdTag != "" && !model.ValidMtprotoAdTag(client.AdTag) {
 				return false, common.NewError("mtproto client ad tag must be 32 hex characters")
 			}
+		case "naiveproxy":
+			if client.NaiveProxyPassword == "" {
+				return false, common.NewError("naiveproxy client requires a password")
+			}
 		default:
 			if client.ID == "" {
 				return false, common.NewError("empty client ID")
@@ -657,6 +661,8 @@ func (s *ClientService) UpdateInboundClient(inboundSvc *InboundService, data *mo
 	case "wireguard", "amneziawg":
 		newClientId = clients[0].Email
 	case "mtproto":
+		newClientId = clients[0].Email
+	case "naiveproxy":
 		newClientId = clients[0].Email
 	default:
 		newClientId = clients[0].ID
