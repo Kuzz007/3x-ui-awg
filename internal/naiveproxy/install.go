@@ -44,15 +44,23 @@ const (
 	maxBinaryBytes  = 256 << 20
 )
 
-// binName is the file this package writes the extracted binary to on disk.
+// binName is the file this package writes the extracted binary to on disk;
+// BinPath appends .exe on Windows only for test discoverability (see there).
 const binName = "caddy"
 
 // Dir is where the binary lives, following the "sidecar owns a subdirectory
 // of bin/" convention Tor/AdGuard/Psiphon use.
 func Dir() string { return config.GetBinFolderPath() + "/naiveproxy" }
 
-// BinPath is the Caddy executable this package manages.
-func BinPath() string { return filepath.Join(Dir(), binName) }
+// BinPath is the Caddy executable this package manages -- the .exe suffix on
+// Windows only helps a test's local stand-in be found; Install never runs there.
+func BinPath() string {
+	name := binName
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	return filepath.Join(Dir(), name)
+}
 
 // IsInstalled reports whether a usable binary is present.
 func IsInstalled() bool {
