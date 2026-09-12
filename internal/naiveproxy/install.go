@@ -51,8 +51,15 @@ const binName = "caddy"
 // of bin/" convention Tor/AdGuard/Psiphon use.
 func Dir() string { return config.GetBinFolderPath() + "/naiveproxy" }
 
-// BinPath is the Caddy executable this package manages.
-func BinPath() string { return filepath.Join(Dir(), binName) }
+// BinPath is the Caddy executable this package manages, matching
+// internal/mtproto.GetBinaryPath's own per-OS naming.
+func BinPath() string {
+	name := binName
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	return filepath.Join(Dir(), name)
+}
 
 // IsInstalled reports whether a usable binary is present.
 func IsInstalled() bool {
