@@ -1221,6 +1221,10 @@ export const SCHEMAS: Record<string, unknown> = {
         "description": "IP limit for this client",
         "type": "integer"
       },
+      "naiveProxyPassword": {
+        "description": "NaiveProxyPassword is the HTTP Basic Auth password Caddy's forward_proxy\nchecks; the username is this client's Email, not a separate field.",
+        "type": "string"
+      },
       "password": {
         "description": "Client password",
         "type": "string"
@@ -1388,6 +1392,9 @@ export const SCHEMAS: Record<string, unknown> = {
       "limitIp": {
         "type": "integer"
       },
+      "naiveProxyPassword": {
+        "type": "string"
+      },
       "password": {
         "type": "string"
       },
@@ -1457,6 +1464,7 @@ export const SCHEMAS: Record<string, unknown> = {
       "keepAlive",
       "limitHwid",
       "limitIp",
+      "naiveProxyPassword",
       "password",
       "preSharedKey",
       "privateKey",
@@ -2196,7 +2204,8 @@ export const SCHEMAS: Record<string, unknown> = {
           "tunnel",
           "tun",
           "mtproto",
-          "amneziawg"
+          "amneziawg",
+          "naiveproxy"
         ],
         "example": "vless",
         "type": "string"

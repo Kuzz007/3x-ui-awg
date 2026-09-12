@@ -295,6 +295,7 @@ export interface Client {
   id?: string;
   keepAlive?: number | null;
   limitIp: number;
+  naiveProxyPassword?: string;
   password?: string;
   preSharedKey?: string;
   privateKey?: string;
@@ -336,6 +337,7 @@ export interface ClientRecord {
   keepAlive: number;
   limitHwid: number;
   limitIp: number;
+  naiveProxyPassword: string;
   password: string;
   preSharedKey: string;
   privateKey: string;

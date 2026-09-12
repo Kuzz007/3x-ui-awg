@@ -1247,6 +1247,10 @@
             "description": "IP limit for this client",
             "type": "integer"
           },
+          "naiveProxyPassword": {
+            "description": "NaiveProxyPassword is the HTTP Basic Auth password Caddy's forward_proxy\nchecks; the username is this client's Email, not a separate field.",
+            "type": "string"
+          },
           "password": {
             "description": "Client password",
             "type": "string"
@@ -1414,6 +1418,9 @@
           "limitIp": {
             "type": "integer"
           },
+          "naiveProxyPassword": {
+            "type": "string"
+          },
           "password": {
             "type": "string"
           },
@@ -1483,6 +1490,7 @@
           "keepAlive",
           "limitHwid",
           "limitIp",
+          "naiveProxyPassword",
           "password",
           "preSharedKey",
           "privateKey",
@@ -2222,7 +2230,8 @@
               "tunnel",
               "tun",
               "mtproto",
-              "amneziawg"
+              "amneziawg",
+              "naiveproxy"
             ],
             "example": "vless",
             "type": "string"
