@@ -14,7 +14,7 @@ import (
 
 // fakeChildListenPort reads the port renderCaddyfile wrote into configPath's
 // site address, so each fake child in a test binds its own port, not a shared one.
-var caddyfileSitePort = regexp.MustCompile(`https://[^:\s]+:(\d+)\s*\{`)
+var caddyfileSitePort = regexp.MustCompile(`https://:(\d+)\s*\{`)
 
 func fakeChildListenPort(configPath string) (int, bool) {
 	data, err := os.ReadFile(configPath)

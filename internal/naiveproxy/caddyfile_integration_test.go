@@ -53,9 +53,27 @@ func writeSelfSignedCert(t *testing.T) (certFile, keyFile string) {
 	return certFile, keyFile
 }
 
-// TestRenderCaddyfileValidatesAgainstTheRealBinary runs "caddy validate"
-// against renderCaddyfile's output. Skips, not fails, without network or off linux/amd64.
+// canReachGitHub is checked before Install so a real Install failure fails
+// the test, instead of being swallowed as "assume no network".
+func canReachGitHub(ctx context.Context) bool {
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, "https://github.com", nil)
+	if err != nil {
+		return false
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return true
+}
+
+// TestRenderCaddyfileValidatesAgainstTheRealBinary runs "caddy validate" on
+// renderCaddyfile's output -- gated behind XUI_NAIVE_E2E=1 (downloads ~12 MiB).
 func TestRenderCaddyfileValidatesAgainstTheRealBinary(t *testing.T) {
+	if os.Getenv("XUI_NAIVE_E2E") == "" && os.Getenv("XUI_NAIVE_E2E_FORCE_TEMP") == "" {
+		t.Skip("set XUI_NAIVE_E2E=1 to run (downloads the real Caddy release)")
+	}
 	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
 		t.Skip("the pinned Caddy release only runs on linux/amd64")
 	}
@@ -63,8 +81,11 @@ func TestRenderCaddyfileValidatesAgainstTheRealBinary(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
+	if !canReachGitHub(ctx) {
+		t.Skip("no network reachability to github.com in this environment")
+	}
 	if err := Install(ctx, http.DefaultClient); err != nil {
-		t.Skipf("could not install the real Caddy binary (likely no network in this environment): %v", err)
+		t.Fatalf("Install (network was reachable): %v", err)
 	}
 
 	inst := testInstance()

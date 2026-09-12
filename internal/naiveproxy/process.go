@@ -126,8 +126,8 @@ func (p *Process) GetResult() string {
 	return ""
 }
 
-// Start launches Caddy and waits until listenAddr accepts a connection, so a
-// caller never observes a "running" instance that isn't actually serving yet.
+// Start launches Caddy and returns once the OS process exists, without
+// confirming it's actually serving (see WaitReady) -- never blocks a caller's own lock.
 func (p *Process) Start() error {
 	if p.IsRunning() {
 		return errors.New("caddy is already running")
@@ -150,11 +150,13 @@ func (p *Process) Start() error {
 		return err
 	}
 	go p.wait(cmd, done)
-	if err := waitForListener(p.listenAddr, p); err != nil {
-		_ = p.Stop()
-		return err
-	}
 	return nil
+}
+
+// WaitReady blocks until this process's listener accepts a connection, so a
+// caller never observes a "running" instance that isn't actually serving yet.
+func (p *Process) WaitReady() error {
+	return waitForListener(p.listenAddr, p)
 }
 
 func (p *Process) wait(cmd *exec.Cmd, done chan struct{}) {
