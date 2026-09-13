@@ -7,10 +7,8 @@ import (
 	"github.com/mhsanaei/3x-ui/v3/internal/config"
 )
 
-// checkPlatform rejects every host but the one release.yml actually builds
-// both binaries for: MTProxy's CRC32 hot path uses real inline x86
-// asm/intrinsics, not just a compiler flag, so no other architecture is
-// possible, and tproxy-server ships nothing to bridge to without it.
+// checkPlatform rejects every host but the one release.yml builds both
+// binaries for -- MTProxy's CRC32 hot path is real inline x86 asm.
 func checkPlatform(goos, goarch string) error {
 	if goos == "linux" && goarch == "amd64" {
 		return nil
@@ -18,9 +16,8 @@ func checkPlatform(goos, goarch string) error {
 	return fmt.Errorf("the Telegram web proxy is only available on linux/amd64 (this host is %s/%s)", goos, goarch)
 }
 
-// dir is where every file this package writes lives, following the
-// "sidecar owns a subdirectory of bin/" convention Tor/AdGuard/Psiphon/mtproto/
-// naiveproxy all use.
+// dir is where every file this package writes lives, matching the
+// "sidecar owns a subdirectory of bin/" convention every other one uses.
 func dir() string { return config.GetBinFolderPath() + "/tproxy" }
 
 // tproxyServerBinaryPath is the relay binary release.yml builds for every
@@ -34,10 +31,8 @@ func mtproxyBinaryPath() string {
 	return config.GetBinFolderPath() + "/mtproxy-linux-amd64"
 }
 
-// IsInstalled reports whether both binaries this package manages are present.
-// Neither is downloaded at runtime -- both ship inside the release tarball --
-// so this only ever fails on a platform release.yml didn't build them for, or
-// a bin/ directory an admin has otherwise tampered with.
+// IsInstalled reports whether both binaries this package manages are
+// present. Neither is downloaded at runtime -- both ship in the release tarball.
 func IsInstalled() bool {
 	return isRegularFile(tproxyServerBinaryPath()) && isRegularFile(mtproxyBinaryPath())
 }

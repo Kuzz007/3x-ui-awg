@@ -10,11 +10,8 @@ import (
 // upstream): a token_key_file must be exactly 32 bytes or the relay refuses to start.
 const tokenKeySize = 32
 
-// ensureTokenKey provisions the relay's persistent signing key on first use and
-// leaves an existing one untouched. Regenerating it on every start would
-// invalidate every in-flight bootstrap/session token the moment the process
-// restarts for an unrelated reason (a client add on a different inbound), so
-// this only ever writes the file when it is missing.
+// ensureTokenKey provisions the relay's signing key once and leaves an
+// existing one untouched -- regenerating it would invalidate live sessions.
 func ensureTokenKey(path string) error {
 	info, err := os.Stat(path)
 	switch {

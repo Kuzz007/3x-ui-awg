@@ -12,20 +12,26 @@ import (
 func TestValidateProxyMultiConf(t *testing.T) {
 	valid := strings.Repeat("# comment padding to clear the byte floor\n", 5) + "default 1.2.3.4:443\nproxy_for 1 1.2.3.4:443\n"
 	cases := []struct {
-		name    string
-		body    string
-		wantErr bool
+		name            string
+		body            string
+		wantErrContains string // empty means no error
 	}{
-		{"valid", valid, false},
-		{"too short", "default 1.2.3.4:443\nproxy_for 1 1.2.3.4:443\n", true},
-		{"missing default line", strings.Repeat("#\n", 60) + "proxy_for 1 1.2.3.4:443\n", true},
-		{"missing proxy_for line", strings.Repeat("#\n", 60) + "default 1.2.3.4:443\n", true},
+		{"valid", valid, ""},
+		{"too short", "default 1.2.3.4:443\nproxy_for 1 1.2.3.4:443\n", "at least"},
+		{"missing default line", strings.Repeat("#\n", 60) + "proxy_for 1 1.2.3.4:443\n", `"default "`},
+		{"missing proxy_for line", strings.Repeat("#\n", 60) + "default 1.2.3.4:443\n", `"proxy_for "`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			err := validateProxyMultiConf([]byte(c.body))
-			if c.wantErr != (err != nil) {
-				t.Errorf("validateProxyMultiConf(%q) error = %v, wantErr %v", c.name, err, c.wantErr)
+			if c.wantErrContains == "" {
+				if err != nil {
+					t.Errorf("validateProxyMultiConf(%q) = %v, want no error", c.name, err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), c.wantErrContains) {
+				t.Errorf("validateProxyMultiConf(%q) error = %v, want it to contain %q", c.name, err, c.wantErrContains)
 			}
 		})
 	}

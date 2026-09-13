@@ -28,15 +28,19 @@ func TestRenderServerConfigOmitsLimitsAndTimeouts(t *testing.T) {
 		"static_routes":   "exact",
 	}
 	for key, expected := range want {
-		if got, _ := raw[key].(string); got != expected {
+		got, ok := raw[key].(string)
+		if !ok {
+			t.Errorf("%s is missing or not a string (raw value %#v)", key, raw[key])
+			continue
+		}
+		if got != expected {
 			t.Errorf("%s = %q, want %q", key, got, expected)
 		}
 	}
-	if raw["public_dir"] == "" {
-		t.Error("public_dir must be set (exactly one of public_dir/public_upstream is required)")
-	}
-	if raw["token_key_file"] == "" || raw["profiles_file"] == "" {
-		t.Error("token_key_file and profiles_file must both be set")
+	for _, key := range []string{"public_dir", "token_key_file", "profiles_file"} {
+		if s, ok := raw[key].(string); !ok || s == "" {
+			t.Errorf("%s must be a non-empty string, got %#v", key, raw[key])
+		}
 	}
 }
 
@@ -57,6 +61,16 @@ func TestRenderProfilesShape(t *testing.T) {
 	p := parsed.Profiles[0]
 	if p.Name != "alice" || p.Backend != "127.0.0.1:2398" || p.CarrierMode != "https" {
 		t.Errorf("unexpected profile: %+v", p)
+	}
+}
+
+func TestRenderProfilesRejectsDuplicateName(t *testing.T) {
+	_, err := renderProfiles([]profileSpec{
+		{Name: "alice", Secret: "00112233445566778899aabbccddeeff", Backend: "127.0.0.1:2398"},
+		{Name: "alice", Secret: "ffeeddccbbaa99887766554433221100", Backend: "127.0.0.1:2399"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "duplicate") {
+		t.Errorf("renderProfiles error = %v, want a duplicate-name error", err)
 	}
 }
 
@@ -123,7 +137,7 @@ func TestMtproxyArgsShape(t *testing.T) {
 		"-S 00112233445566778899aabbccddeeff",
 		"-S 00112233445566778899aabbccddee00",
 		"--aes-pwd",
-		"-M 1",
+		"-M 0",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("mtproxyArgs = %q, want it to contain %q", joined, want)

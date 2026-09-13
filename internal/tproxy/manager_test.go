@@ -91,15 +91,10 @@ func portFromServerConfig(path string) (int, bool) {
 // and arms TestMain's fake-child mode -- no real linux/amd64-only binaries needed.
 func installFakeBinaries(t *testing.T) (pidFile string) {
 	t.Helper()
-	if runtime.GOOS == "windows" {
-		// The fake binary is a copy of this test binary's own bytes under a
-		// fixed Linux-style filename (tproxyServerBinaryPath/mtproxyBinaryPath
-		// are never Windows-suffixed -- this sidecar is checkPlatform-gated to
-		// linux/amd64 in production). Windows' exec refuses to launch a copy
-		// without a recognized extension even given an explicit full path, so
-		// this technique only works on the platform the feature actually
-		// targets; CI (a Linux runner) is what actually exercises it.
-		t.Skip("process-spawning fake-binary tests need linux/amd64, this fork's own tproxy support target")
+	// Same gate Ensure itself enforces -- the fake binary needs a real exec of
+	// a Linux-style filename, which only works on the platform Ensure allows.
+	if err := checkPlatform(runtime.GOOS, runtime.GOARCH); err != nil {
+		t.Skip(err.Error())
 	}
 	binDir := t.TempDir()
 	self, err := os.Executable()
@@ -290,7 +285,11 @@ func TestManagerEnsureRejectsMissingTelegramConfig(t *testing.T) {
 	t.Cleanup(m.StopAll)
 
 	inst := Instance{Id: 1, Clients: []ClientSecret{{Name: "alice", Secret: "00112233445566778899aabbccddeeff"}}}
-	if err := m.Ensure("proxy.example.com", inst); err == nil {
+	err := m.Ensure("proxy.example.com", inst)
+	if err == nil {
 		t.Fatal("Ensure succeeded without proxy-secret/proxy-multi.conf ever being provisioned")
+	}
+	if !strings.Contains(err.Error(), "EnsureTelegramConfigFiles") {
+		t.Errorf("Ensure error = %v, want it to name the missing precondition", err)
 	}
 }

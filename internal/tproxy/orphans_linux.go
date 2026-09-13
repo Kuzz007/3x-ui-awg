@@ -11,9 +11,8 @@ import (
 	"syscall"
 )
 
-// killStrayProcesses terminates orphaned tproxy-server/MTProxy processes from
-// a previous run, one call per binary -- same reason internal/mtproto's
-// killStrayMtgProcesses and internal/naiveproxy's killStrayCaddyProcesses exist.
+// killStrayProcesses terminates orphaned processes of one binary from a
+// previous run, mirroring the sibling sidecar packages' identical helper.
 func killStrayProcesses(binaryPath string) int {
 	base := filepath.Base(binaryPath)
 	if base == "" || base == "." || base == string(filepath.Separator) {

@@ -23,10 +23,7 @@ var (
 )
 
 // procLogWriter forwards a child's stdout/stderr into the panel log a line at
-// a time, and remembers the most recent one for GetResult. Identical shape to
-// internal/mtproto's and internal/naiveproxy's own copy of this type; kept
-// package-local rather than shared since none of the three packages otherwise
-// depend on each other.
+// a time, and remembers the most recent one for GetResult.
 type procLogWriter struct {
 	mu       sync.Mutex
 	label    string
@@ -77,28 +74,31 @@ func (w *procLogWriter) LastLine() string {
 	return w.lastLine
 }
 
-// serverProcess wraps the one panel-wide tproxy-server invocation.
-type serverProcess struct {
+// childProcess supervises one external binary invocation -- either the one
+// shared tproxy-server relay or one inbound's MTProxy engine.
+type childProcess struct {
 	mu              sync.RWMutex
 	cmd             *exec.Cmd
 	done            chan struct{}
-	configPath      string
-	listenAddr      string
+	binaryPath      string
+	args            []string
+	readyAddr       string // loopback "ip:port" WaitReady polls
 	logWriter       *procLogWriter
 	exitErr         error
 	intentionalStop atomic.Bool
 }
 
-func newServerProcess(configPath, listenAddr string) *serverProcess {
-	return &serverProcess{
-		configPath: configPath,
-		listenAddr: listenAddr,
-		logWriter:  &procLogWriter{label: "tproxy-server"},
+func newChildProcess(binaryPath string, args []string, readyAddr, label string) *childProcess {
+	return &childProcess{
+		binaryPath: binaryPath,
+		args:       args,
+		readyAddr:  readyAddr,
+		logWriter:  &procLogWriter{label: label},
 	}
 }
 
-// IsRunning reports whether the tproxy-server process is currently running.
-func (p *serverProcess) IsRunning() bool {
+// IsRunning reports whether the child process is currently running.
+func (p *childProcess) IsRunning() bool {
 	p.mu.RLock()
 	cmd, done := p.cmd, p.done
 	p.mu.RUnlock()
@@ -116,7 +116,7 @@ func (p *serverProcess) IsRunning() bool {
 }
 
 // GetResult returns the last log line or the exit error from the process.
-func (p *serverProcess) GetResult() string {
+func (p *childProcess) GetResult() string {
 	if line := p.logWriter.LastLine(); line != "" {
 		return line
 	}
@@ -129,13 +129,13 @@ func (p *serverProcess) GetResult() string {
 	return ""
 }
 
-// Start launches tproxy-server and returns once the OS process exists,
-// without confirming it is actually serving -- see WaitReady.
-func (p *serverProcess) Start() error {
+// Start launches the process and returns once the OS process exists, without
+// confirming it is actually serving -- see WaitReady.
+func (p *childProcess) Start() error {
 	if p.IsRunning() {
-		return errors.New("tproxy-server is already running")
+		return errors.New("already running")
 	}
-	cmd := exec.CommandContext(context.Background(), tproxyServerBinaryPath(), "-config", p.configPath)
+	cmd := exec.Command(p.binaryPath, p.args...)
 	cmd.Dir = dir()
 	cmd.Stdout = p.logWriter
 	cmd.Stderr = p.logWriter
@@ -157,27 +157,27 @@ func (p *serverProcess) Start() error {
 	return nil
 }
 
-// WaitReady blocks until this process's listener accepts a connection, so a
-// caller never observes a "running" instance that is not actually serving yet.
-func (p *serverProcess) WaitReady() error {
-	return waitForListener(p.listenAddr, p)
+// WaitReady blocks until readyAddr accepts a connection, so a caller never
+// observes a "running" instance that is not actually serving yet.
+func (p *childProcess) WaitReady() error {
+	return waitForListener(p.readyAddr, p)
 }
 
-func (p *serverProcess) wait(cmd *exec.Cmd, done chan struct{}) {
+func (p *childProcess) wait(cmd *exec.Cmd, done chan struct{}) {
 	defer close(done)
 	err := cmd.Wait()
 	p.logWriter.Flush()
 	if err == nil || p.intentionalStop.Load() {
 		return
 	}
-	logger.Errorf("tproxy: tproxy-server process exited: %v", err)
+	logger.Errorf("tproxy: %s process exited: %v", p.logWriter.label, err)
 	p.mu.Lock()
 	p.exitErr = err
 	p.mu.Unlock()
 }
 
 // Stop terminates the process gracefully, falling back to a kill.
-func (p *serverProcess) Stop() error {
+func (p *childProcess) Stop() error {
 	if !p.IsRunning() {
 		return nil
 	}
@@ -203,7 +203,7 @@ func (p *serverProcess) Stop() error {
 		return nil
 	}
 
-	logger.Warning("tproxy: tproxy-server did not stop after SIGTERM, killing process")
+	logger.Warningf("tproxy: %s did not stop after SIGTERM, killing process", p.logWriter.label)
 	if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
 		return err
 	}
@@ -224,22 +224,19 @@ func waitForExit(done <-chan struct{}, timeout time.Duration) error {
 	}
 }
 
-// readyChecker is the minimal surface waitForListener needs, satisfied by
-// both serverProcess and mtproxyProcess.
+// readyChecker is the minimal surface waitForListener needs.
 type readyChecker interface {
 	IsRunning() bool
 	GetResult() string
 }
 
-// readyWaiter is the common surface Manager awaits outside its lock, whether
-// the thing that just (re)started was a per-inbound MTProxy engine or the
-// shared tproxy-server relay.
+// readyWaiter is the common surface Manager awaits outside its lock.
 type readyWaiter interface {
 	WaitReady() error
 }
 
 // waitForListener blocks until addr accepts a connection, giving up early if
-// the process died. Shared by both process kinds in this package.
+// the process died.
 func waitForListener(addr string, proc readyChecker) error {
 	ctx, cancel := context.WithTimeout(context.Background(), startupTimeout)
 	defer cancel()

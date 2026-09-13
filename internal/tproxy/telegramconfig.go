@@ -10,11 +10,8 @@ import (
 	"os"
 )
 
-// proxySecretURL/proxyMultiConfURL are Telegram's own MTProxy provisioning
-// endpoints -- not this fork's infrastructure, not user-configurable. Every
-// MTProxy deployment, including upstream's own reference one, fetches these
-// same two URLs the same way. Vars, not consts, purely so tests can point
-// them at an httptest server.
+// proxySecretURL/proxyMultiConfURL are Telegram's own fixed provisioning
+// endpoints. Vars, not consts, so tests can point them at an httptest server.
 var (
 	proxySecretURL    = "https://core.telegram.org/getProxySecret"
 	proxyMultiConfURL = "https://core.telegram.org/getProxyConfig"
@@ -33,9 +30,7 @@ const minProxyMultiConfSize = 100
 const maxTelegramConfigBytes = 1 << 20
 
 // EnsureTelegramConfigFiles fetches whichever of Telegram's two MTProxy
-// provisioning files is missing. It never overwrites a file already on disk --
-// that is RefreshTelegramConfig's job -- so a fresh install fetches both
-// exactly once and every later Ensure/Reconcile is a no-op here.
+// provisioning files is missing; never overwrites one already on disk.
 func EnsureTelegramConfigFiles(ctx context.Context, client *http.Client) error {
 	if err := os.MkdirAll(dir(), 0o700); err != nil {
 		return fmt.Errorf("cannot create %s: %w", dir(), err)
@@ -61,13 +56,8 @@ func EnsureTelegramConfigFiles(ctx context.Context, client *http.Client) error {
 	return nil
 }
 
-// RefreshTelegramConfig re-fetches proxy-multi.conf and reports whether its
-// content changed. Telegram's own middle-proxy list moves occasionally
-// (upstream's README: "encourage you to update it once per day"); the proxy
-// secret has no such guidance and, matching upstream's own refresh script, is
-// never re-fetched once obtained. Callers should restart every running
-// MTProxy process when this reports changed=true -- the engine reads the file
-// once at startup, no signal or endpoint reloads it.
+// RefreshTelegramConfig re-fetches proxy-multi.conf and reports whether it
+// changed; a caller must then restart every MTProxy engine (no live reload).
 func RefreshTelegramConfig(ctx context.Context, client *http.Client) (changed bool, err error) {
 	conf, err := fetchProxyMultiConf(ctx, client)
 	if err != nil {
@@ -106,9 +96,7 @@ func fetchProxyMultiConf(ctx context.Context, client *http.Client) ([]byte, erro
 }
 
 // validateProxyMultiConf mirrors upstream's own install/refresh scripts'
-// sanity check on the fetched file (byte-count floor plus both expected
-// directive lines) -- a network hiccup returning an HTML error page or a
-// truncated body must not silently become MTProxy's live routing table.
+// sanity check, so an HTML error page never becomes MTProxy's routing table.
 func validateProxyMultiConf(body []byte) error {
 	if len(body) < minProxyMultiConfSize {
 		return fmt.Errorf("response is %d bytes, want at least %d", len(body), minProxyMultiConfSize)
@@ -154,13 +142,20 @@ func fetchURL(ctx context.Context, client *http.Client, url string) ([]byte, err
 	return body, nil
 }
 
-// writeFileAtomic writes data to a fixed "path.new" staging file and renames
-// it into place, so a process killed mid-write never leaves a truncated file
-// at path for the next start to trust.
+// writeFileAtomic writes data to a fixed "path.new" staging file, fsyncs it,
+// and renames it into place -- durable across a crash, not just a clean kill.
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	tmp := path + ".new"
-	if err := os.WriteFile(tmp, data, perm); err != nil {
-		return fmt.Errorf("cannot write %s: %w", tmp, err)
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	if err != nil {
+		return fmt.Errorf("cannot create %s: %w", tmp, err)
+	}
+	_, writeErr := f.Write(data)
+	syncErr := f.Sync()
+	closeErr := f.Close()
+	if writeErr != nil || syncErr != nil || closeErr != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("cannot write %s: %w", tmp, errors.Join(writeErr, syncErr, closeErr))
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)

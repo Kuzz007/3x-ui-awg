@@ -15,7 +15,7 @@ import (
 
 // managedMTProxy is one tproxy inbound's running engine.
 type managedMTProxy struct {
-	proc        *mtproxyProcess
+	proc        *childProcess
 	clientPort  int
 	statsPort   int
 	fingerprint string
@@ -23,15 +23,14 @@ type managedMTProxy struct {
 
 // managedServer is the one panel-wide tproxy-server process.
 type managedServer struct {
-	proc        *serverProcess
+	proc        *childProcess
 	listenAddr  string
 	adminAddr   string
 	fingerprint string
 }
 
 // Manager owns every tproxy-related process: the one shared tproxy-server
-// relay and one MTProxy engine per tproxy inbound -- see the package doc
-// comment in types.go for why these two have different scopes.
+// relay and one MTProxy engine per tproxy inbound.
 type Manager struct {
 	mu        sync.Mutex
 	instances map[int]Instance
@@ -53,10 +52,8 @@ func GetManager() *Manager {
 	return manager
 }
 
-// ServerAddr returns the loopback address the shared tproxy-server relay is
-// currently listening on, for a caller (internal/frontproxy's own wiring) to
-// reverse-proxy a bridge-authenticated request to. ok is false until at least
-// one tproxy inbound has an active client.
+// ServerAddr returns the loopback address the shared relay is listening on,
+// for frontproxy to reverse-proxy a bridge-authenticated request to.
 func (m *Manager) ServerAddr() (addr string, ok bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -86,10 +83,8 @@ func (inst Instance) secretsFingerprint() string {
 	return strings.Join(pairs, "|")
 }
 
-// Ensure brings the MTProxy engine for one tproxy inbound, and the shared
-// relay's profile set, in line with inst. hostname is the panel's public
-// domain (frontproxy's own TLS domain); tproxy shares that single domain
-// rather than getting its own.
+// Ensure brings inst's MTProxy engine and the shared relay's profile set in
+// line with it. hostname is frontproxy's own public TLS domain.
 func (m *Manager) Ensure(hostname string, inst Instance) error {
 	if err := checkPlatform(runtime.GOOS, runtime.GOARCH); err != nil {
 		return err
@@ -121,10 +116,8 @@ func (m *Manager) Ensure(hostname string, inst Instance) error {
 }
 
 // ensureMTProxyLocked is Ensure's non-blocking half for the per-inbound
-// engine; returns the freshly spawned process to await outside the lock, or
-// nil when nothing new started (including the true noop case, where this
-// inbound's secret set has not actually changed).
-func (m *Manager) ensureMTProxyLocked(inst Instance) (*mtproxyProcess, error) {
+// engine; returns the freshly spawned process to await, or nil if a noop.
+func (m *Manager) ensureMTProxyLocked(inst Instance) (*childProcess, error) {
 	if len(inst.Clients) == 0 {
 		m.removeMTProxyLocked(inst.Id)
 		delete(m.instances, inst.Id)
@@ -133,6 +126,18 @@ func (m *Manager) ensureMTProxyLocked(inst Instance) (*mtproxyProcess, error) {
 	if !isRegularFile(proxySecretPath()) || !isRegularFile(proxyMultiConfPath()) {
 		return nil, fmt.Errorf("tproxy: Telegram's proxy-secret/proxy-multi.conf are not provisioned yet -- call EnsureTelegramConfigFiles first")
 	}
+
+	// Validated before commit to m.instances -- a rejected client must not
+	// leave a half-updated instance for an unrelated later Ensure to read.
+	normalizedClients := make([]ClientSecret, len(inst.Clients))
+	for i, c := range inst.Clients {
+		secret, err := normalizeSecret(c.Secret)
+		if err != nil {
+			return nil, fmt.Errorf("tproxy: inbound %d client %q: %w", inst.Id, c.Name, err)
+		}
+		normalizedClients[i] = ClientSecret{Name: c.Name, Secret: secret}
+	}
+	inst.Clients = normalizedClients
 
 	m.instances[inst.Id] = inst
 	fp := inst.secretsFingerprint()
@@ -155,10 +160,15 @@ func (m *Manager) ensureMTProxyLocked(inst Instance) (*mtproxyProcess, error) {
 		return nil, fmt.Errorf("tproxy: inbound %d: %w", inst.Id, err)
 	}
 
+	// Must be in place before Start -- -H binds every interface immediately.
+	if err := ensureFirewall(context.Background(), append(m.mtproxyPortsSetLocked(), clientPort, statsPort)); err != nil {
+		return nil, fmt.Errorf("tproxy: firewall: %w", err)
+	}
+
 	if cur, ok := m.mtproxies[inst.Id]; ok {
 		_ = cur.proc.Stop()
 	}
-	proc := newMTProxyProcess(args, fmt.Sprintf("127.0.0.1:%d", clientPort), fmt.Sprintf("mtproxy inbound %d", inst.Id))
+	proc := newChildProcess(mtproxyBinaryPath(), args, fmt.Sprintf("127.0.0.1:%d", clientPort), fmt.Sprintf("mtproxy inbound %d", inst.Id))
 	if err := proc.Start(); err != nil {
 		return nil, err
 	}
@@ -166,10 +176,8 @@ func (m *Manager) ensureMTProxyLocked(inst Instance) (*mtproxyProcess, error) {
 	return proc, nil
 }
 
-// mtproxyPortsLocked returns the loopback ports inbound id's engine should
-// bind: the same ones already assigned when the process already exists (a
-// secrets-only restart must not also force a firewall/profiles.json churn it
-// does not need), freshly allocated otherwise.
+// mtproxyPortsLocked reuses inbound id's already-assigned ports across a
+// restart, allocating fresh ones only the first time.
 func (m *Manager) mtproxyPortsLocked(id int) (clientPort, statsPort int, err error) {
 	if cur, ok := m.mtproxies[id]; ok {
 		return cur.clientPort, cur.statsPort, nil
@@ -195,13 +203,9 @@ func (m *Manager) removeMTProxyLocked(id int) {
 	logger.Infof("tproxy: stopped mtproxy for inbound %d", id)
 }
 
-// recomputeSharedServerLocked rebuilds the panel-wide profile set from every
-// known instance and, when it actually changed, restarts the one shared
-// tproxy-server process to pick it up (or stops it when no client remains
-// anywhere) and reapplies the firewall table from the current port set.
-// Returns the freshly (re)started process to await outside the lock, nil when
-// nothing changed.
-func (m *Manager) recomputeSharedServerLocked(hostname string) (*serverProcess, error) {
+// recomputeSharedServerLocked restarts the shared relay when the aggregate
+// profile set changed (or stops it once empty); nil return means no change.
+func (m *Manager) recomputeSharedServerLocked(hostname string) (*childProcess, error) {
 	specs := m.profileSpecsLocked()
 
 	if len(specs) == 0 {
@@ -268,7 +272,7 @@ func (m *Manager) recomputeSharedServerLocked(hostname string) (*serverProcess, 
 	if m.server != nil {
 		_ = m.server.proc.Stop()
 	}
-	proc := newServerProcess(serverConfigPath(), listenAddr)
+	proc := newChildProcess(tproxyServerBinaryPath(), []string{"-config", serverConfigPath()}, listenAddr, "tproxy-server")
 	if err := proc.Start(); err != nil {
 		return nil, err
 	}
@@ -277,11 +281,8 @@ func (m *Manager) recomputeSharedServerLocked(hostname string) (*serverProcess, 
 	return proc, nil
 }
 
-// profileSpecsLocked builds the full cross-inbound profile list from
-// m.instances, resolving each client's backend from its own inbound's
-// currently assigned MTProxy client port. A client whose inbound has no
-// running engine yet (should not happen -- ensureMTProxyLocked always runs
-// first) is skipped rather than emitting an invalid backend.
+// profileSpecsLocked builds the cross-inbound profile list from m.instances;
+// a client whose inbound has no running engine yet is skipped, not emitted.
 func (m *Manager) profileSpecsLocked() []profileSpec {
 	var specs []profileSpec
 	for id, inst := range m.instances {
@@ -314,12 +315,8 @@ func ensurePublicPlaceholder() error {
 	return os.WriteFile(path, []byte(placeholderIndexHTML), 0o644)
 }
 
-// Remove stops and forgets inbound id's MTProxy engine and drops its clients
-// from the shared relay's profile set, stopping the relay entirely if that
-// was the last client anywhere, or rewriting and restarting it with the
-// remaining ones otherwise -- hostname must be the same value passed to
-// Ensure/Reconcile elsewhere, needed whenever another inbound's clients
-// survive this removal and the relay's config.json must stay valid for them.
+// Remove stops inbound id's engine and drops its clients from the shared
+// relay. hostname must match what Ensure/Reconcile elsewhere already use.
 func (m *Manager) Remove(hostname string, id int) {
 	m.mu.Lock()
 	m.removeMTProxyLocked(id)
@@ -331,10 +328,8 @@ func (m *Manager) Remove(hostname string, id int) {
 	}
 }
 
-// Reconcile drives the running set toward desired: removes engines no longer
-// wanted, (re)starts the rest, spawning under the lock and awaiting readiness
-// after releasing it so one slow instance cannot stall the others, then
-// (re)starts the shared relay at most once for the whole batch.
+// Reconcile drives the running set toward desired, awaiting readiness outside
+// the lock so one slow instance cannot stall the others.
 func (m *Manager) Reconcile(hostname string, desired []Instance) {
 	if err := checkPlatform(runtime.GOOS, runtime.GOARCH); err != nil {
 		if len(desired) > 0 {
