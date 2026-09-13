@@ -180,6 +180,54 @@ jobs:
               rm -rf "${MTG_PKG}" "${MTG_PKG}.tar.gz"
               ;;
           esac
+
+          # Telegram WEB proxy sidecar (tproxy): a Go relay (tproxy-server) that
+          # bridges a Telegram app's WebView-carried MTProto traffic to the
+          # official MTProxy engine (C, amd64-only -- real inline x86 asm/
+          # intrinsics in its CRC32 hot path, not just compiler flags). Neither
+          # upstream publishes prebuilt releases, so both are compiled here from
+          # pinned-commit source, mirroring AlexeyLCP/lucx-ui's own working
+          # release pipeline for the same two projects -- with one improvement:
+          # MTProxy is fetched via a real git checkout (not a source tarball), so
+          # its Makefile's `git log -1` COMMIT stamp embeds correctly instead of
+          # silently landing empty the way a tarball checkout leaves it.
+          DEST="$PWD"
+          TPROXY_SHA=f7a6acc4d536a787d442fd7df3ba4ebfd728f406
+          rm -rf /tmp/tproxy-src && mkdir /tmp/tproxy-src
+          git -C /tmp/tproxy-src init -q
+          git -C /tmp/tproxy-src fetch -q --depth 1 https://github.com/telegramdesktop/tproxy-server.git "$TPROXY_SHA"
+          git -C /tmp/tproxy-src checkout -q FETCH_HEAD
+          # tproxy-server has no cgo dependency of its own, so this cross-compiles
+          # cleanly for every platform in the matrix using only the Go toolchain
+          # already set up for this job -- unlike x-ui's own build above, no
+          # Bootlin cross-toolchain/CC override is needed here.
+          (cd /tmp/tproxy-src && env CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH" GOARM="$GOARM" \
+            go build -trimpath -ldflags='-s -w' -o "$DEST/tproxy-linux-${{ matrix.platform }}" ./cmd/tproxy-server)
+          chmod +x "$DEST/tproxy-linux-${{ matrix.platform }}"
+
+          if [ "${{ matrix.platform }}" == "amd64" ]; then
+            MTPROXY_SHA=f36d8af769ffaeac36978d38c2c0f6d1104c2137
+            rm -rf /tmp/mtproxy-src && mkdir /tmp/mtproxy-src
+            git -C /tmp/mtproxy-src init -q
+            git -C /tmp/mtproxy-src fetch -q --depth 1 https://github.com/TelegramMessenger/MTProxy.git "$MTPROXY_SHA"
+            git -C /tmp/mtproxy-src checkout -q FETCH_HEAD
+            # Built inside a throwaway container (not the runner's own toolchain)
+            # so the exact Ubuntu 22.04 gcc/libssl/zlib combo is reproducible and
+            # doesn't drift with whatever ubuntu-latest happens to ship.
+            docker run --rm --user 0 -v /tmp/mtproxy-src:/src -w /src ubuntu:22.04 bash -lc \
+              'apt-get update -qq && apt-get install -y -qq --no-install-recommends gcc make libssl-dev zlib1g-dev >/dev/null && make -j"$(nproc)"'
+            cp /tmp/mtproxy-src/objs/bin/mtproto-proxy "$DEST/mtproxy-linux-amd64"
+            chmod +x "$DEST/mtproxy-linux-amd64"
+            # The container's Ubuntu 22.04 toolchain can link against a glibc
+            # newer than the oldest distro this fork still supports (Debian 12,
+            # glibc 2.35) -- fail loudly here rather than ship a binary that
+            # refuses to start on it.
+            if readelf -V "$DEST/mtproxy-linux-amd64" | grep -E 'GLIBC_2\.(3[6-9]|[4-9][0-9])'; then
+              echo "mtproxy linked against glibc newer than 2.35 (breaks Debian 12)" >&2
+              exit 1
+            fi
+          fi
+
           cd ../..
 
       - name: Package
