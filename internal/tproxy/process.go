@@ -135,7 +135,7 @@ func (p *childProcess) Start() error {
 	if p.IsRunning() {
 		return errors.New("already running")
 	}
-	cmd := exec.Command(p.binaryPath, p.args...)
+	cmd := exec.CommandContext(context.Background(), p.binaryPath, p.args...)
 	cmd.Dir = dir()
 	cmd.Stdout = p.logWriter
 	cmd.Stderr = p.logWriter
