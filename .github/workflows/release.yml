@@ -180,6 +180,60 @@ jobs:
               rm -rf "${MTG_PKG}" "${MTG_PKG}.tar.gz"
               ;;
           esac
+
+          # Telegram WEB proxy sidecar (tproxy), amd64-only: a Go relay
+          # (tproxy-server) bridging a Telegram app's WebView-carried MTProto
+          # traffic to the official MTProxy engine (C -- real inline x86 asm/
+          # intrinsics in its CRC32 hot path, not just a compiler flag, so no
+          # other platform is possible). Neither upstream publishes prebuilt
+          # releases, so both are compiled here from pinned-commit source.
+          # tproxy-server itself would cross-compile for the whole matrix, but
+          # ships nothing to bridge to without MTProxy, so it is only built
+          # here alongside it rather than for the other six platforms too.
+          if [ "${{ matrix.platform }}" == "amd64" ]; then
+            DEST="$PWD"
+            TPROXY_SHA=f7a6acc4d536a787d442fd7df3ba4ebfd728f406
+            rm -rf /tmp/tproxy-src && mkdir /tmp/tproxy-src
+            git -C /tmp/tproxy-src init -q
+            git -C /tmp/tproxy-src fetch -q --depth 1 https://github.com/telegramdesktop/tproxy-server.git "$TPROXY_SHA"
+            git -C /tmp/tproxy-src checkout -q FETCH_HEAD
+            (cd /tmp/tproxy-src && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+              go build -trimpath -ldflags='-s -w' -o "$DEST/tproxy-linux-amd64" ./cmd/tproxy-server)
+            chmod +x "$DEST/tproxy-linux-amd64"
+
+            # MTProxy's own Makefile links glibc/OpenSSL/zlib dynamically,
+            # unlike every other binary this project ships (x-ui itself is a
+            # static musl build; Xray/mtg-multi are static Go) -- the
+            # installer supports Alpine (no glibc at all) and CentOS 7 (glibc
+            # 2.17), so a dynamic build would silently fail to even exec
+            # there. The LDFLAGS override below replaces the Makefile's own
+            # -rdynamic with -static instead, matching that convention.
+            MTPROXY_SHA=f36d8af769ffaeac36978d38c2c0f6d1104c2137
+            rm -rf /tmp/mtproxy-src && mkdir /tmp/mtproxy-src
+            git -C /tmp/mtproxy-src init -q
+            git -C /tmp/mtproxy-src fetch -q --depth 1 https://github.com/TelegramMessenger/MTProxy.git "$MTPROXY_SHA"
+            git -C /tmp/mtproxy-src checkout -q FETCH_HEAD
+            # Built inside a throwaway container, not the runner's own
+            # toolchain, so the gcc/libssl/zlib combo is a fixed distro
+            # release rather than whatever ubuntu-latest ships that day.
+            docker run --rm --user 0 -v /tmp/mtproxy-src:/src -w /src ubuntu:22.04 bash -lc '
+              set -e
+              apt-get update -qq
+              apt-get install -y -qq --no-install-recommends gcc make git libssl-dev zlib1g-dev >/dev/null
+              git config --global --add safe.directory /src
+              make -j"$(nproc)" LDFLAGS="-ggdb -static -lm -lrt -lcrypto -lz -lpthread"
+            '
+            cp /tmp/mtproxy-src/objs/bin/mtproto-proxy "$DEST/mtproxy-linux-amd64"
+            chmod +x "$DEST/mtproxy-linux-amd64"
+            # ldd resolving real shared-library dependencies means the
+            # LDFLAGS override above didn't actually take -- fail loudly
+            # rather than ship a binary that can't exec on Alpine/CentOS 7.
+            if ldd "$DEST/mtproxy-linux-amd64" >/dev/null 2>&1; then
+              echo "mtproxy-linux-amd64 is dynamically linked (expected static)" >&2
+              exit 1
+            fi
+          fi
+
           cd ../..
 
       - name: Package
